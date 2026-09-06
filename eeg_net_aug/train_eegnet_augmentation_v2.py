@@ -174,6 +174,17 @@ def has_missing_checkpoint(config, subject, results_dir=RESULTS_DIR):
     return os.path.exists(missing_sentinel_path(config, subject, results_dir))
 
 
+def clear_missing_checkpoint(config, subject, results_dir=RESULTS_DIR):
+    """Borra el sentinel si quedó de una corrida anterior donde faltaba el
+    checkpoint -- necesario para que un checkpoint que aparece después (o un
+    resolver que ahora sabe encontrarlo, como el alias de
+    fm_lambda_50_postnet) no deje corridas válidas enterradas bajo un resumen
+    'missing_checkpoint' desactualizado."""
+    path = missing_sentinel_path(config, subject, results_dir)
+    if os.path.exists(path):
+        os.remove(path)
+
+
 def ensure_run(config, subject, ratio, seed, X_train, y_train, X_test, y_test, device,
                 X_pool=None, y_pool=None, n_aug=0, results_dir=RESULTS_DIR):
     """Corre (config, sujeto, ratio, seed) si no existe ya su archivo --
@@ -263,6 +274,7 @@ def run_subject(subject, device):
             mark_missing_checkpoint(config, subject)
             summarize_subject(config, subject)
             continue
+        clear_missing_checkpoint(config, subject)  # el checkpoint sí apareció esta vez
         X_pool, y_pool = pool
         for ratio in RATIOS:
             n_aug = round(ratio * n_train_target)
@@ -292,6 +304,19 @@ def _selfcheck():
         row2 = pd.read_csv(os.path.join(tmp, 'fake_cfg_missing', 'subject_002_summary.csv')).iloc[0]
         assert row2['status'] == 'missing_checkpoint', row2['status']
         assert pd.isna(row2['accuracy_mean']), row2['accuracy_mean']
+
+        # Regresión: un checkpoint que aparece DESPUÉS de haberse marcado
+        # missing (p.ej. un alias de resolver nuevo que ahora sí lo encuentra)
+        # no debe dejar corridas válidas enterradas bajo un resumen viejo.
+        clear_missing_checkpoint('fake_cfg_missing', 2, results_dir=tmp)
+        path = run_path('fake_cfg_missing', 2, 0.1, 1, results_dir=tmp)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w') as f:
+            json.dump({'accuracy': 0.9, 'f1': 0.9, 'f1_macro': 0.9, 'auc': 0.9}, f)
+        summarize_subject('fake_cfg_missing', 2, results_dir=tmp)
+        row3 = pd.read_csv(os.path.join(tmp, 'fake_cfg_missing', 'subject_002_summary.csv')).iloc[0]
+        assert row3['status'] == 'ok', row3['status']
+        assert row3['n_runs'] == 1, row3['n_runs']
 
 
 if __name__ == '__main__':
