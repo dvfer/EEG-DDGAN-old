@@ -66,11 +66,42 @@ _tea.CONFIGS = {
 }
 CONFIGS_WITH_AUG = list(_tea.CONFIGS)
 
+# GAN_009_fm50_postnet1_stack0 (moabb_pipeline.py) es la MISMA arquitectura que
+# fm_lambda_50_postnet (use_dwt=True, lambda_fm=50, use_postnet=True,
+# use_stacking=False, mismo patch_size/seed) pero entrenada a presupuesto
+# completo (GAN_N_EPOCHS=2000) para sujetos 2-10, mientras que el checkpoint
+# ABLATION_* (solo sujeto 1) se entrenó a ABLATION_N_EPOCHS=200 ("bajo a
+# propósito para iterar rápido"). Preferimos el checkpoint completo cuando
+# existe -- OJO: esto deja la fila de sujeto 1 en desventaja de presupuesto de
+# entrenamiento (200 vs. 2000 épocas) frente a sujetos 2-10 para este config;
+# no hay forma de evitarlo sin re-entrenar GAN_009_fm50_postnet1_stack0_s001.
+_CHECKPOINT_ALIASES = {
+    'fm_lambda_50_postnet': [
+        os.path.join(GAN_DIR, 'GAN_009_fm50_postnet1_stack0_s{:03d}.pt'),
+        os.path.join(GAN_DIR, 'ABLATION_fm_lambda_50_postnet_s{:03d}.pt'),
+    ],
+}
+
+
+def _resolve_checkpoint_template(config_name, subject):
+    """Primer template de _CHECKPOINT_ALIASES cuyo .pt exista para `subject`;
+    si ninguno existe, el primero (para que el mensaje de error de
+    _tea.get_pool() señale el checkpoint "principal"). Configs sin alias
+    (todas menos fm_lambda_50_postnet) devuelven su único template de
+    siempre, sin cambios."""
+    candidates = _CHECKPOINT_ALIASES.get(config_name, [_tea.CONFIGS[config_name]])
+    for template in candidates:
+        if os.path.exists(template.format(subject)):
+            return template
+    return candidates[0]
+
 
 def get_pool(config_name, subject, train_csv):
     """Como _tea.get_pool(), pero devuelve None en vez de lanzar si falta el
     checkpoint/pool -- así el caller escribe el sentinel MISSING_CHECKPOINT
     en vez de abortar el sujeto entero."""
+    if _tea.CONFIGS[config_name] is not None:
+        _tea.CONFIGS[config_name] = _resolve_checkpoint_template(config_name, subject)
     try:
         return _tea.get_pool(config_name, subject, train_csv)
     except Exception as exc:
