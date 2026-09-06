@@ -25,7 +25,7 @@ Configs comparadas (4 con aumento + baseline sin aumento):
     generado vía generate_eeggan_vanilla_augpool.sh.
   - none: EEGNet sin ningún aumento (solo datos reales de train).
 
-10 repeticiones por (config, sujeto, ratio) con seeds LITERALES 1..10 (no
+50 repeticiones por (config, sujeto, ratio) con seeds LITERALES 1..50 (no
 SEED+r) -- menos que las 100 del script viejo, por tiempo de cómputo.
 
 Uso (correr desde la RAÍZ del repo, como el resto de los scripts -- los
@@ -52,7 +52,7 @@ import train_eegnet_augmentation as _tea  # noqa: E402 -- EEGNet, sample_pool, g
 
 RESULTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'results')
 RATIOS = [0.1, 0.2, 0.3, 0.4, 0.5]
-SEEDS = list(range(1, 11))  # literales 1..10 -- a diferencia de SEED+r del script viejo
+SEEDS = list(range(1, 51))  # literales 1..50 -- a diferencia de SEED+r del script viejo
 
 # Set de configs de ESTE experimento -- distinto al de train_eegnet_augmentation.py.
 # Pisa el CONFIGS del módulo importado: get_pool() de ese módulo lee CONFIGS a
