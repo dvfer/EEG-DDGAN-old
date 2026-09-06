@@ -17,13 +17,18 @@ incluido el mecanismo por subprocess para eeg_gan_vanilla_full), y de
 compare_samples.py: load()/train_norm_stats() (misma normalización que ve
 el generador).
 
-Configs comparadas (4 con aumento + baseline sin aumento):
-  - fm_lambda_0, fm_lambda_50_postnet: checkpoints de ablation_pipeline.py
+Configs comparadas (3 con aumento + baseline sin aumento):
+  - fm_lambda_50_postnet: checkpoint de ablation_pipeline.py
     (trained_models/ABLATION_<name>_s<subj>.pt).
   - tts_gan_baseline: trained_models/GAN_009_tts_gan_baseline_s<subj>.pt.
   - eeg_gan_vanilla_full: worktree `main` (EEG-DDGAN-main-vanilla/), pool
     generado vía generate_eeggan_vanilla_augpool.sh.
   - none: EEGNet sin ningún aumento (solo datos reales de train).
+
+  (fm_lambda_0 se sacó del barrido: su checkpoint solo existe para sujeto 1
+  -- ABLATION_SUBJECT hardcodeado en ablation_pipeline.py -- así que nunca
+  pudo compararse contra el resto de la cohorte. Los datos ya calculados de
+  sujeto 1 quedan en eeg_net_aug/results/fm_lambda_0/, no se borran.)
 
 50 repeticiones por (config, sujeto, ratio) con seeds LITERALES 1..50 (no
 SEED+r) -- menos que las 100 del script viejo, por tiempo de cómputo.
@@ -59,7 +64,10 @@ SEEDS = list(range(1, 51))  # literales 1..50 -- a diferencia de SEED+r del scri
 # nivel de módulo, así reusamos su lógica de generación de pools (incluido el
 # subprocess de eeg_gan_vanilla_full) sin reimplementarla.
 _tea.CONFIGS = {
-    'fm_lambda_0': os.path.join(GAN_DIR, 'ABLATION_fm_lambda_0_s{:03d}.pt'),
+    # fm_lambda_0 sacado del barrido: checkpoint solo existe para sujeto 1
+    # (ABLATION_SUBJECT hardcodeado en ablation_pipeline.py), nunca comparable
+    # contra el resto de la cohorte. Datos ya calculados quedan en
+    # eeg_net_aug/results/fm_lambda_0/ (no se borran, solo no se recalculan).
     'fm_lambda_50_postnet': os.path.join(GAN_DIR, 'ABLATION_fm_lambda_50_postnet_s{:03d}.pt'),
     'tts_gan_baseline': os.path.join(GAN_DIR, 'GAN_009_tts_gan_baseline_s{:03d}.pt'),
     'eeg_gan_vanilla_full': None,  # pool generado aparte (worktree `main`), ver get_pool() de _tea
