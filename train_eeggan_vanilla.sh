@@ -33,9 +33,10 @@
 # un git worktree aparte -- no toca tu working tree de ttsgan-direct.
 #
 # Uso:
-#   ./train_eeggan_vanilla.sh [subject_id] [target]   # default: 1 time
+#   ./train_eeggan_vanilla.sh [subject_id] [target] [dataset]   # default: 1 time BNCI2014_009
 #   ./train_eeggan_vanilla.sh 1 channels
 #   ./train_eeggan_vanilla.sh 1 full
+#   ./train_eeggan_vanilla.sh 1 full BNCI2014_008
 
 set -euo pipefail
 
@@ -43,6 +44,13 @@ set -euo pipefail
 SUBJECT="${1:-1}"
 SUBJECT_FMT=$(printf "%03d" "$SUBJECT")
 TARGET="${2:-time}"   # time | channels | full
+DATASET="${3:-BNCI2014_009}"   # BNCI2014_009 | BNCI2014_008 -- ver _DIR_SUFFIX en moabb_pipeline.py
+case "$DATASET" in
+    BNCI2014_009) DIR_SUFFIX="" ;;
+    BNCI2014_008) DIR_SUFFIX="_008" ;;
+    *) echo "Dataset desconocido: $DATASET (usar BNCI2014_009 o BNCI2014_008)" >&2; exit 1 ;;
+esac
+DATASET_CODE="${DATASET##*_}"   # 'BNCI2014_009' -> '009'
 
 # Presupuesto de entrenamiento -- alinealo con ABLATION_N_EPOCHS de
 # ablation_pipeline.py si querés que la comparación sea de presupuesto parejo.
@@ -56,25 +64,25 @@ TIME_OUT=50
 CHANNELS_OUT=10
 PATCH_SIZE=10
 
-# El target va en el nombre: así un checkpoint entrenado con otro target
-# nunca se reusa en silencio con una config distinta -- ver el mismatch de
-# canales que documentamos arriba (nos pasó una vez).
-AE_NAME="AE_vanilla_${TARGET}_s${SUBJECT_FMT}"
-GAN_NAME="EEG_GAN_vanilla_${TARGET}_s${SUBJECT_FMT}"
+# El target y el dataset van en el nombre: así un checkpoint entrenado con
+# otro target/dataset nunca se reusa en silencio con una config distinta --
+# ver el mismatch de canales que documentamos arriba (nos pasó una vez).
+AE_NAME="AE_vanilla_${DATASET_CODE}_${TARGET}_s${SUBJECT_FMT}"
+GAN_NAME="EEG_GAN_vanilla_${DATASET_CODE}_${TARGET}_s${SUBJECT_FMT}"
 
 WORKTREE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../EEG-DDGAN-main-vanilla"
 # ─────────────────────────────────────────────────────────────────────────
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-TRAIN_CSV="${REPO_ROOT}/subject_data/train/subject_${SUBJECT_FMT}.csv"
-TEST_CSV="${REPO_ROOT}/subject_data/test/subject_${SUBJECT_FMT}.csv"
+TRAIN_CSV="${REPO_ROOT}/subject_data/train${DIR_SUFFIX}/subject_${SUBJECT_FMT}.csv"
+TEST_CSV="${REPO_ROOT}/subject_data/test${DIR_SUFFIX}/subject_${SUBJECT_FMT}.csv"
 
 if [[ ! -f "$TRAIN_CSV" ]]; then
-    echo "No existe $TRAIN_CSV -- corré moabb_pipeline.py --subjects $SUBJECT primero (en ttsgan-direct)." >&2
+    echo "No existe $TRAIN_CSV -- corré 'python moabb_pipeline.py --dataset $DATASET --subjects $SUBJECT' primero (en ttsgan-direct)." >&2
     exit 1
 fi
 if [[ ! -f "$TEST_CSV" ]]; then
-    echo "No existe $TEST_CSV -- corré moabb_pipeline.py --subjects $SUBJECT primero (en ttsgan-direct)." >&2
+    echo "No existe $TEST_CSV -- corré 'python moabb_pipeline.py --dataset $DATASET --subjects $SUBJECT' primero (en ttsgan-direct)." >&2
     exit 1
 fi
 echo "=== Preparando worktree de 'main' en $WORKTREE_DIR ==="
@@ -208,7 +216,7 @@ main([
 ])
 PYEOF
 
-OUT_CSV="${REPO_ROOT}/generated_samples/EEG_GAN_vanilla_${TARGET}_s${SUBJECT_FMT}_synthetic.csv"
+OUT_CSV="${REPO_ROOT}/generated_samples/${GAN_NAME}_synthetic.csv"
 mkdir -p "${REPO_ROOT}/generated_samples"
 "$PY" -c "
 import pandas as pd
@@ -222,4 +230,4 @@ echo ""
 echo "=== Listo ==="
 echo "Para agregarlo a la tabla de ablation (desde el worktree de ttsgan-direct):"
 echo "  cd $REPO_ROOT"
-echo "  python eval_external_config.py --name eeg_gan_vanilla_${TARGET} --gen-csv generated_samples/EEG_GAN_vanilla_${TARGET}_s${SUBJECT_FMT}_synthetic.csv --subject $SUBJECT"
+echo "  python eval_external_config.py --name eeg_gan_vanilla_${DATASET_CODE}_${TARGET} --gen-csv generated_samples/${GAN_NAME}_synthetic.csv --subject $SUBJECT"

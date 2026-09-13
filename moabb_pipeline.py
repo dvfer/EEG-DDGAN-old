@@ -1,4 +1,4 @@
-"""Pipeline: BNCI2014_009 (P300) → CSV multi-canal → GAN (ttsgan-direct)
+"""Pipeline: MOABB P300 (BNCI2014_009 / BNCI2014_008) → CSV multi-canal → GAN (ttsgan-direct)
 
 Reemplaza los bucles bash de entrenamiento. Llama directamente a las
 funciones Python de eeggan sin subprocesses.
@@ -10,7 +10,9 @@ divisor de la longitud de secuencia cruda del dataset (ya no de `time_out`
 del AE) — `gan_training_main.py` lanza un `ValueError` claro si no lo es.
 
 Uso:
-    python moabb_pipeline.py
+    python moabb_pipeline.py                        # usa DATASET_NAME de abajo
+    python moabb_pipeline.py --dataset BNCI2014_008
+    python moabb_pipeline.py --dataset BNCI2014_008 --subjects 1 2
 
 Ajusta las variables de configuración de abajo antes de ejecutar.
 """
@@ -24,8 +26,14 @@ import pandas as pd
 # CONFIGURACIÓN  (equivalente a las variables del script bash)
 # ────────────────────────────────────────────────────────────
 
-# Sujetos a procesar (IDs de BNCI2014_009: 1-10)
-SUBJECTS = [1, 2, 3]
+# Dataset MOABB a usar: 'BNCI2014_009' (10 sujetos) o 'BNCI2014_008' (8 sujetos)
+DATASET_NAME = 'BNCI2014_009'
+
+# Sujetos por defecto por dataset (override con --subjects)
+DEFAULT_SUBJECTS = {
+    'BNCI2014_009': [1, 2, 3],
+    'BNCI2014_008': list(range(1, 9)),  # los 8 sujetos del dataset
+}
 
 # Condición a exportar: 'Target', 'NonTarget', o 'Both'
 CONDITION = 'Both'
@@ -33,9 +41,19 @@ CONDITION = 'Both'
 # Normalización z-score por trial antes de exportar (False = sin normalizar)
 NORM = False
 
-# Directorios de salida
-DATA_DIR      = 'subject_data/train'
-TEST_DATA_DIR = 'subject_data/test'   # held-out, nunca visto en entrenamiento (evaluación)
+# Directorios de salida. BNCI2014_009 mantiene las rutas planas originales
+# (compare_samples.py/ablation_pipeline.py/train_eeggan_vanilla.sh las tienen
+# hardcodeadas así) — otros datasets van a un directorio hermano sufijado para
+# no pisar esos CSVs/checkpoints.
+_DIR_SUFFIX = {'BNCI2014_009': '', 'BNCI2014_008': '_008'}
+
+
+def _data_dirs(dataset_name):
+    suffix = _DIR_SUFFIX[dataset_name]
+    return f'subject_data/train{suffix}', f'subject_data/test{suffix}'
+
+
+DATA_DIR, TEST_DATA_DIR = _data_dirs(DATASET_NAME)
 TEST_SIZE     = 0.2                    # fracción de trials para el held-out set
 GAN_DIR  = 'trained_models'
 
@@ -50,14 +68,26 @@ GAN_LAMBDA_FM  = 50     # peso de la feature-matching loss (50: mejores resultad
 GAN_USE_POSTNET = True  # smoothing residual de costuras de patch en el generador
 GAN_USE_STACKING = False # combinar D1 (TTS) + D2 (DWT) vía StackingDiscriminator
 
-# Prefijo para los archivos de modelo -- codifica los hiperparámetros que más
-# solemos variar entre corridas, para no pisar/confundir checkpoints de config
-# distinta (mismo motivo que el nombre por target en train_eeggan_vanilla.sh).
-MODEL_PREFIX = (
-    f'GAN_009_fm{GAN_LAMBDA_FM}'
-    f'_postnet{int(GAN_USE_POSTNET)}'
-    f'_stack{int(GAN_USE_STACKING)}'
-)
+# Preset alternativo: TTS-GAN puro (sin segundo discriminador DWT, sin PostNet,
+# sin stacking) -- el 'tts_gan_baseline'/'baseline' del ablation, usado como
+# comparación contra el modelo completo ('main', los GAN_USE_* de arriba).
+# Seleccionable con --config tts_baseline; no afecta el preset 'main' por defecto.
+GAN_CONFIGS = {
+    'tts_baseline': dict(use_dwt=False, high_freq=False, dwt_j=GAN_DWT_J, lambda_fm=0,
+                          use_postnet=False, use_stacking=False),
+}
+
+# Prefijo para los archivos de modelo -- codifica el dataset + los hiperparámetros
+# que más solemos variar entre corridas, para no pisar/confundir checkpoints de
+# config distinta (mismo motivo que el nombre por target en train_eeggan_vanilla.sh).
+def _model_prefix(dataset_name, config_name='main'):
+    code = dataset_name.split('_')[-1]  # 'BNCI2014_009' -> '009'
+    if config_name != 'main':
+        return f'GAN_{code}_{config_name}'
+    return f'GAN_{code}_fm{GAN_LAMBDA_FM}_postnet{int(GAN_USE_POSTNET)}_stack{int(GAN_USE_STACKING)}'
+
+
+MODEL_PREFIX = _model_prefix(DATASET_NAME)
 
 # ────────────────────────────────────────────────────────────
 
@@ -240,23 +270,45 @@ def train_gan(csv_path, gan_save_path, patch_size=10,
 
 
 def main():
-    from moabb.datasets import BNCI2014_009
+    from moabb.datasets import BNCI2014_008, BNCI2014_009
     from moabb.paradigms import P300
 
+    dataset_classes = {'BNCI2014_009': BNCI2014_009, 'BNCI2014_008': BNCI2014_008}
+
     parser = argparse.ArgumentParser(
-        description="Pipeline BNCI2014_009 (P300) -> CSV -> GAN (ttsgan-direct, sin autoencoder)"
+        description="Pipeline MOABB P300 -> CSV -> GAN (ttsgan-direct, sin autoencoder)"
     )
     parser.add_argument(
-        '--subjects', type=int, nargs='+', default=SUBJECTS,
-        help='IDs de sujetos a procesar (default: SUBJECTS del archivo). Ej: --subjects 1'
+        '--dataset', choices=list(dataset_classes), default=DATASET_NAME,
+        help=f'Dataset MOABB a usar (default: {DATASET_NAME})'
+    )
+    parser.add_argument(
+        '--subjects', type=int, nargs='+', default=None,
+        help='IDs de sujetos a procesar (default: DEFAULT_SUBJECTS[dataset] del archivo). Ej: --subjects 1'
+    )
+    parser.add_argument(
+        '--config', choices=['main'] + list(GAN_CONFIGS), default='main',
+        help="Preset de hiperparámetros de GAN: 'main' (DWT+FM+PostNet, default) "
+             "o 'tts_baseline' (TTS-GAN puro, sin DWT/PostNet/stacking)"
     )
     args = parser.parse_args()
+    if args.subjects is None:
+        args.subjects = DEFAULT_SUBJECTS[args.dataset]
 
-    dataset  = BNCI2014_009()
+    dataset  = dataset_classes[args.dataset]()
     paradigm = P300()
 
-    os.makedirs(DATA_DIR, exist_ok=True)
-    os.makedirs(TEST_DATA_DIR, exist_ok=True)
+    # Recalcular rutas/prefijo si --dataset/--config difieren de los defaults del archivo
+    data_dir, test_data_dir = _data_dirs(args.dataset)
+    model_prefix  = _model_prefix(args.dataset, args.config)
+    gan_kwargs = (
+        dict(use_dwt=GAN_USE_DWT, high_freq=GAN_HIGH_FREQ, dwt_j=GAN_DWT_J,
+             lambda_fm=GAN_LAMBDA_FM, use_postnet=GAN_USE_POSTNET, use_stacking=GAN_USE_STACKING)
+        if args.config == 'main' else GAN_CONFIGS[args.config]
+    )
+
+    os.makedirs(data_dir, exist_ok=True)
+    os.makedirs(test_data_dir, exist_ok=True)
     os.makedirs(GAN_DIR,  exist_ok=True)
 
     for subject in args.subjects:
@@ -265,9 +317,9 @@ def main():
         print(f'{"="*55}')
 
         # Rutas de archivos
-        csv_path      = os.path.join(DATA_DIR, f'subject_{subject:03d}.csv')       # 80% train
-        test_csv_path = os.path.join(TEST_DATA_DIR, f'subject_{subject:03d}.csv')  # 20% held-out
-        gan_save_path = os.path.join(GAN_DIR,  f'{MODEL_PREFIX}_s{subject:03d}.pt')
+        csv_path      = os.path.join(data_dir, f'subject_{subject:03d}.csv')       # 80% train
+        test_csv_path = os.path.join(test_data_dir, f'subject_{subject:03d}.csv')  # 20% held-out
+        gan_save_path = os.path.join(GAN_DIR,  f'{model_prefix}_s{subject:03d}.pt')
 
         # 1. Exportar CSVs train/test (se omite si ambos ya existen)
         if os.path.exists(csv_path) and os.path.exists(test_csv_path):
@@ -317,12 +369,7 @@ def main():
             patch_size=GAN_PATCH_SIZE,
             n_epochs=GAN_N_EPOCHS,
             seed=GAN_SEED,
-            use_dwt=GAN_USE_DWT,
-            high_freq=GAN_HIGH_FREQ,
-            dwt_j=GAN_DWT_J,
-            lambda_fm=GAN_LAMBDA_FM,
-            use_postnet=GAN_USE_POSTNET,
-            use_stacking=GAN_USE_STACKING,
+            **gan_kwargs,
         )
 
     print('\nPipeline completado.')
