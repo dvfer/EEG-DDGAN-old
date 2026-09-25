@@ -55,7 +55,6 @@ plt.rcParams.update({
 
 def _generate_condition_csv(model_path, out_csv, condition, n_samples):
     from eeggan.generate_samples_main import main as generate_main
-    n_samples = min(n_samples, MAX_SAMPLES_PER_COND)
     generate_main([
         f'model={model_path}',
         f'save_name={out_csv}',
@@ -65,17 +64,26 @@ def _generate_condition_csv(model_path, out_csv, condition, n_samples):
     ])
 
 
-def generate_synthetic(model_path, real_csv, out_csv):
+def generate_synthetic(model_path, real_csv, out_csv, n_per_cond=None):
     """Genera tantas muestras sintéticas como trials reales por condición
     (hasta MAX_SAMPLES_PER_COND) y las junta en un único CSV con el mismo
-    formato largo que el real."""
+    formato largo que el real.
+
+    n_per_cond: dict {nombre_condición: n} para fijar el tamaño a mano en vez
+    de derivarlo de los trials reales (y saltear el cap de MAX_SAMPLES_PER_COND).
+    n=0 saltea esa condición. Lo usa el pool de aumento, que solo necesita
+    Target y en cantidad >> trials reales -- ver sample_pool() en
+    train_eegnet_augmentation.py."""
     real_df = pd.read_csv(real_csv)
     n_trials_per_cond = real_df.groupby('Condition')['Trial'].nunique()
 
     os.makedirs(GEN_DIR, exist_ok=True)
     parts = []
     for name, cond in CONDITIONS.items():
-        n = int(n_trials_per_cond.get(cond, 0))
+        if n_per_cond is not None:
+            n = int(n_per_cond.get(name, 0))
+        else:
+            n = min(int(n_trials_per_cond.get(cond, 0)), MAX_SAMPLES_PER_COND)
         if n == 0:
             continue
         tmp_csv = os.path.join(GEN_DIR, f'_tmp_{name}.csv')

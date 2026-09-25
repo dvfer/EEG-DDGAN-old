@@ -59,6 +59,17 @@ CONFIGS = {
     'eeg_gan_vanilla_full': None,  # pool generado por generate_eeggan_vanilla_augpool.sh
 }
 
+# Pool vanilla: nombre legacy (BNCI2014_009, sin código de dataset) + dataset a
+# pasarle al script. Pisables a nivel módulo para correr otro dataset -- mismo
+# mecanismo que CONFIGS (ver eeg_net_aug/train_eegnet_augmentation_v2.py).
+VANILLA_POOL_TEMPLATE = 'EEG_GAN_vanilla_full_s{:03d}_augpool.csv'
+VANILLA_DATASET = 'BNCI2014_009'
+# Tamaño del pool sintético. None = el de siempre (trials reales, capeado a
+# compare_samples.MAX_SAMPLES_PER_COND=200, ambas condiciones). Un int fija N
+# muestras SOLO de Target -- que es lo único que sample_pool() consume -- y
+# escribe a un archivo con sufijo propio para no pisar los pools viejos.
+POOL_N_TARGET = None
+
 
 class EEGNet(nn.Module):
     """Lawhern et al. 2018, versión compacta. Input: (batch, 1, n_channels, n_times)."""
@@ -182,20 +193,24 @@ def get_pool(config_name, subject, train_csv):
     ckpt_template = CONFIGS[config_name]
     if ckpt_template is not None:
         model_path = ckpt_template.format(subject)
-        pool_csv = os.path.join(GEN_DIR, f'{os.path.splitext(os.path.basename(model_path))[0]}_augpool.csv')
+        sfx = '' if POOL_N_TARGET is None else f'_p{POOL_N_TARGET}'
+        pool_csv = os.path.join(GEN_DIR, f'{os.path.splitext(os.path.basename(model_path))[0]}_augpool{sfx}.csv')
         if not os.path.exists(model_path):
             raise FileNotFoundError(f'Falta checkpoint {model_path}')
         if not os.path.exists(pool_csv):
             print(f'    Generando pool sintético ({config_name}) -> {pool_csv}')
-            generate_synthetic(model_path, train_csv, pool_csv)  # tamaño ~ trials de TRAIN por condición
+            n_per_cond = None if POOL_N_TARGET is None else {'Target': POOL_N_TARGET, 'NonTarget': 0}
+            generate_synthetic(model_path, train_csv, pool_csv, n_per_cond)
         else:
             print(f'    Pool sintético ya existe, se reusa: {pool_csv}')
     else:
-        pool_csv = os.path.join(GEN_DIR, f'EEG_GAN_vanilla_full_s{subject:03d}_augpool.csv')
+        pool_csv = os.path.join(GEN_DIR, VANILLA_POOL_TEMPLATE.format(subject))
         if not os.path.exists(pool_csv):
             print(f'    Generando pool sintético ({config_name}) -> {pool_csv} (subproceso, otro venv)')
             script = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'generate_eeggan_vanilla_augpool.sh')
-            subprocess.run([script, str(subject), 'full'], check=True)  # falla clara si falta el worktree/checkpoint
+            # falla clara si falta el worktree/checkpoint
+            subprocess.run([script, str(subject), 'full', VANILLA_DATASET, pool_csv,
+                            str(POOL_N_TARGET or 0)], check=True)
         else:
             print(f'    Pool sintético ya existe, se reusa: {pool_csv}')
     return load(pool_csv, norm_data=False)  # ya en la escala [0,1] del generador que lo produjo

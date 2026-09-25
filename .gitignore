@@ -7,3 +7,13 @@ __pycache__/
 *.pyc
 trained_ae/
 subject_data/
+
+# Resultados de experimentos: copia local de demerzel (~270 MB, 45k archivos).
+# No se versionan los crudos; para el paper se versiona el CSV agregado.
+eeg_net_aug/results*/
+eeg_net_aug/_ratio1.0_incompleto/
+ae_full.pt
+eeg_gan_metrics.png
+ablation_results/
+comparison_plots/
+generated_samples/
