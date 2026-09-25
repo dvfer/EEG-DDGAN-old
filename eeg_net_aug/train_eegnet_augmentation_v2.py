@@ -60,10 +60,19 @@ import train_eegnet_augmentation as _tea  # noqa: E402 -- EEGNet, sample_pool, g
 
 DATASET = 'BNCI2014_009'  # pisado por --dataset (ver use_dataset())
 DEFAULT_EPOCHS = _tea.N_EPOCHS  # 60 -- lo ya corrido; otro valor va a results..._ep<N>
-DEFAULT_LR = 1e-3  # lo ya corrido; otro valor va a results..._lr<LR>
 DEFAULT_POOL = None  # None = pool de siempre (200/cond); un int va a results..._pool<N>
 DEFAULT_MODEL = 'eegnet'  # lo ya corrido; otro clasificador va a results..._<modelo>
-LR = DEFAULT_LR    # pisado por --lr (ver use_dataset())
+
+# Receta de Adam por modelo. eegnet: la que se corrió siempre. conformer: la
+# del código oficial de Song et al. 2023 (lr 2e-4, betas (0.5, 0.999), sin
+# weight decay) -- no la de EEGNet, que con el Conformer no está calibrada.
+# --lr pisa el lr; un lr distinto al default DEL MODELO va a results..._lr<LR>.
+OPTIM = {
+    'eegnet':    {'lr': 1e-3, 'betas': (0.9, 0.999), 'weight_decay': 1e-4},
+    'conformer': {'lr': 2e-4, 'betas': (0.5, 0.999), 'weight_decay': 0.0},
+}
+DEFAULT_LR = OPTIM[DEFAULT_MODEL]['lr']
+LR = DEFAULT_LR    # pisado por --lr / por el default del modelo (ver use_dataset())
 MODEL = DEFAULT_MODEL  # pisado por --model (ver use_dataset())
 RESULTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'results')
 DEFAULT_SUBJECTS = {'BNCI2014_009': list(range(1, 11)), 'BNCI2014_008': list(range(1, 9))}
@@ -148,10 +157,10 @@ def use_dataset(dataset_name, n_epochs=None, lr=None, pool_n_target=None, model=
     DATASET = dataset_name
     if n_epochs is not None:
         _tea.N_EPOCHS = n_epochs
-    if lr is not None:
-        LR = lr
     if model is not None:
         MODEL = model
+    # el modelo primero: sin --lr, el lr es el default DEL MODELO (OPTIM)
+    LR = lr if lr is not None else OPTIM[MODEL]['lr']
     if pool_n_target is not None:
         # pool grande y SOLO Target: sample_pool() nunca toca NonTarget, y un
         # pool chico hace que todos los seeds sampleen casi las mismas muestras
@@ -161,7 +170,7 @@ def use_dataset(dataset_name, n_epochs=None, lr=None, pool_n_target=None, model=
 
     suffix = _mp._DIR_SUFFIX[dataset_name]
     ep_suffix = '' if _tea.N_EPOCHS == DEFAULT_EPOCHS else f'_ep{_tea.N_EPOCHS}'
-    lr_suffix = '' if LR == DEFAULT_LR else f'_lr{LR:g}'
+    lr_suffix = '' if LR == OPTIM[MODEL]['lr'] else f'_lr{LR:g}'
     pool_suffix = '' if _tea.POOL_N_TARGET is None else f'_pool{_tea.POOL_N_TARGET}'
     model_suffix = '' if MODEL == DEFAULT_MODEL else f'_{MODEL}'
     RESULTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -227,7 +236,8 @@ def run_single(X_train, y_train, X_test, y_test, device, seed):
     class_counts = torch.bincount(y_tr, minlength=2).float()
     weight = (class_counts.sum() / (2 * class_counts.clamp(min=1))).to(device)
     criterion = nn.CrossEntropyLoss(weight=weight)
-    optimizer = torch.optim.Adam(model.parameters(), lr=LR, weight_decay=1e-4)
+    optimizer = torch.optim.Adam(model.parameters(), lr=LR, betas=OPTIM[MODEL]['betas'],
+                                 weight_decay=OPTIM[MODEL]['weight_decay'])
 
     model.train()
     perm_rng = np.random.default_rng(seed)
@@ -406,6 +416,9 @@ def _selfcheck():
     después de cargar los datos."""
     net, to_input = build_model(n_channels=8, n_times=206)
     assert net(to_input(np.zeros((4, 206, 8), dtype=np.float32))).shape == (4, 2)
+    # un lr que NO es el default del modelo tiene que ir a un árbol aparte:
+    # correr con otro lr encima de results/ mezclaría recetas en un mismo summary
+    assert LR == OPTIM[MODEL]['lr'] or f'_lr{LR:g}' in RESULTS_DIR, (MODEL, LR, RESULTS_DIR)
 
     with tempfile.TemporaryDirectory() as tmp:
         for seed, acc in zip((1, 2, 3), (1.0, 0.5, 0.5)):
@@ -468,8 +481,10 @@ if __name__ == '__main__':
                              '200/cond con NonTarget incluido); otro valor escribe en results..._pool<N>')
     parser.add_argument('--ratios', nargs='+', type=float, default=None,
                         help=f'ratios de aumento a correr (default {RATIOS}); los ya calculados se saltean')
-    parser.add_argument('--lr', type=float, default=DEFAULT_LR,
-                        help=f'learning rate de Adam (default {DEFAULT_LR}); otro valor escribe en results..._lr<LR>')
+    parser.add_argument('--lr', type=float, default=None,
+                        help='learning rate de Adam (default: el del modelo, '
+                             + ', '.join(f'{m}={o["lr"]:g}' for m, o in OPTIM.items())
+                             + '); otro valor escribe en results..._lr<LR>')
     parser.add_argument('--model', choices=['eegnet', 'conformer'], default=DEFAULT_MODEL,
                         help=f'clasificador (default {DEFAULT_MODEL}); otro valor escribe en results..._<modelo>')
     args = parser.parse_args()
