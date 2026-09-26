@@ -56,6 +56,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 
 from compare_samples import DATA_DIR, GAN_DIR, TEST_DATA_DIR, load, train_norm_stats  # noqa: E402
 import moabb_pipeline as _mp  # noqa: E402 -- convención de rutas/nombres por dataset
+import subsample_train as _sub  # noqa: E402 -- frac_tag(), para que los nombres de dir no se bifurquen
 import train_eegnet_augmentation as _tea  # noqa: E402 -- EEGNet, sample_pool, get_pool, N_EPOCHS/BATCH_SIZE
 
 DATASET = 'BNCI2014_009'  # pisado por --dataset (ver use_dataset())
@@ -135,7 +136,8 @@ def build_model(n_channels, n_times):
     raise ValueError(f'modelo desconocido: {MODEL}')
 
 
-def use_dataset(dataset_name, n_epochs=None, lr=None, pool_n_target=None, model=None):
+def use_dataset(dataset_name, n_epochs=None, lr=None, pool_n_target=None, model=None,
+                train_frac=None):
     """Repunta datos, checkpoints y resultados al dataset dado.
 
     n_epochs: épocas de EEGNet (default DEFAULT_EPOCHS=60). Si difiere del
@@ -143,6 +145,12 @@ def use_dataset(dataset_name, n_epochs=None, lr=None, pool_n_target=None, model=
     con presupuesto de entrenamiento distinto NO son comparables y no deben
     caer en el mismo summary -- es la misma clase de bug que motivó este
     script (ver docstring del módulo).
+
+    train_frac: fracción del train real (ver subsample_train.py). Repunta
+    DATA_DIR y los checkpoints a la versión recortada y manda los resultados a
+    results..._f<N>. TEST_DATA_DIR NO se toca: el held-out se mantiene completo
+    e idéntico en todas las fracciones, que es lo que las hace comparables
+    entre sí y contra lo ya calculado.
 
     BNCI2014_009 no se toca: mantiene rutas planas (subject_data/train),
     los nombres de checkpoint de siempre y eeg_net_aug/results/, así lo ya
@@ -175,22 +183,52 @@ def use_dataset(dataset_name, n_epochs=None, lr=None, pool_n_target=None, model=
     model_suffix = '' if MODEL == DEFAULT_MODEL else f'_{MODEL}'
     RESULTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                f'results{suffix}{ep_suffix}{lr_suffix}{pool_suffix}{model_suffix}')
-    if dataset_name == 'BNCI2014_009':
-        return
+    if dataset_name != 'BNCI2014_009':
+        code = dataset_name.split('_')[-1]
+        DATA_DIR, TEST_DATA_DIR = _mp._data_dirs(dataset_name)
 
-    code = dataset_name.split('_')[-1]
-    DATA_DIR, TEST_DATA_DIR = _mp._data_dirs(dataset_name)
+        _tea.CONFIGS = {
+            'fm_lambda_50_postnet': os.path.join(GAN_DIR, f'{_mp._model_prefix(dataset_name)}_s{{:03d}}.pt'),
+            'tts_gan_baseline': os.path.join(
+                GAN_DIR, f'{_mp._model_prefix(dataset_name, "tts_baseline")}_s{{:03d}}.pt'),
+            'eeg_gan_vanilla_full': None,
+        }
+        CONFIGS_WITH_AUG = list(_tea.CONFIGS) + [REAL_OVERSAMPLE]
+        _CHECKPOINT_ALIASES.clear()  # los alias ABLATION_* son artefactos solo de 009
+        _tea.VANILLA_POOL_TEMPLATE = f'EEG_GAN_vanilla_{code}_full_s{{:03d}}_augpool.csv'
+        _tea.VANILLA_DATASET = dataset_name
 
+    if train_frac is not None:
+        _use_train_frac(train_frac)
+
+
+def _use_train_frac(frac):
+    """Repunta datos/checkpoints/resultados a la fracción recortada del train.
+    Separado de use_dataset() solo para que el early-return de BNCI2014_009 no
+    se saltee esto: el recorte aplica igual a los dos datasets."""
+    global DATA_DIR, RESULTS_DIR
+    tag = _sub.frac_tag(frac)
+    RESULTS_DIR = f'{RESULTS_DIR}_{tag}'
+    DATA_DIR = f'{DATA_DIR}_{tag}'  # TEST_DATA_DIR no: el held-out se mantiene completo
+
+    # El GAN tiene que estar reentrenado sobre el MISMO subconjunto que ve el
+    # clasificador. Si se aumentara con un checkpoint entrenado sobre el train
+    # completo, las muestras sintéticas traerían información de los trials
+    # recortados y la ganancia medida sería un leak, no un efecto real.
+    #
+    # Los nombres salen siempre de _model_prefix(), o sea como los guarda
+    # moabb_pipeline.py: los checkpoints recortados se entrenan con ese script,
+    # no existe versión ABLATION_* ni el 'tts_gan_baseline' histórico de 009.
     _tea.CONFIGS = {
-        'fm_lambda_50_postnet': os.path.join(GAN_DIR, f'{_mp._model_prefix(dataset_name)}_s{{:03d}}.pt'),
+        'fm_lambda_50_postnet': os.path.join(
+            GAN_DIR, f'{_mp._model_prefix(DATASET)}_{tag}_s{{:03d}}.pt'),
         'tts_gan_baseline': os.path.join(
-            GAN_DIR, f'{_mp._model_prefix(dataset_name, "tts_baseline")}_s{{:03d}}.pt'),
+            GAN_DIR, f'{_mp._model_prefix(DATASET, "tts_baseline")}_{tag}_s{{:03d}}.pt'),
         'eeg_gan_vanilla_full': None,
     }
-    CONFIGS_WITH_AUG = list(_tea.CONFIGS) + [REAL_OVERSAMPLE]
-    _CHECKPOINT_ALIASES.clear()  # los alias ABLATION_* son artefactos solo de 009
-    _tea.VANILLA_POOL_TEMPLATE = f'EEG_GAN_vanilla_{code}_full_s{{:03d}}_augpool.csv'
-    _tea.VANILLA_DATASET = dataset_name
+    _CHECKPOINT_ALIASES.clear()  # los ABLATION_* no tienen version recortada
+    _tea.VANILLA_POOL_TEMPLATE = _tea.VANILLA_POOL_TEMPLATE.replace(
+        '_augpool.csv', f'_{tag}_augpool.csv')
 
 
 def _resolve_checkpoint_template(config_name, subject):
@@ -487,9 +525,14 @@ if __name__ == '__main__':
                              + '); otro valor escribe en results..._lr<LR>')
     parser.add_argument('--model', choices=['eegnet', 'conformer'], default=DEFAULT_MODEL,
                         help=f'clasificador (default {DEFAULT_MODEL}); otro valor escribe en results..._<modelo>')
+    parser.add_argument('--train-frac', type=float, default=None, dest='train_frac',
+                        help='fracción del train real a usar (ver subsample_train.py, hay que '
+                             'correrlo antes); escribe en results..._f<N>. El test no se recorta.')
     args = parser.parse_args()
+    if args.train_frac is not None and not 0 < args.train_frac < 1:
+        parser.error(f'--train-frac debe estar entre 0 y 1 (dado: {args.train_frac})')
 
-    use_dataset(args.dataset, args.epochs, args.lr, args.pool_size, args.model)
+    use_dataset(args.dataset, args.epochs, args.lr, args.pool_size, args.model, args.train_frac)
     _selfcheck()
     if args.configs:
         desconocidas = set(args.configs) - set(CONFIGS_WITH_AUG)
