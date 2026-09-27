@@ -291,9 +291,21 @@ def main():
         help="Preset de hiperparámetros de GAN: 'main' (DWT+FM+PostNet, default) "
              "o 'tts_baseline' (TTS-GAN puro, sin DWT/PostNet/stacking)"
     )
+    parser.add_argument(
+        '--train-frac', type=float, default=None, dest='train_frac',
+        help='Entrenar la GAN sobre la fracción recortada del train (hay que correr '
+             'subsample_train.py --frac antes). El checkpoint lleva el sufijo _f<N>: la GAN '
+             'tiene que ver el MISMO subconjunto que el clasificador, si no la ganancia es leak.'
+    )
+    parser.add_argument(
+        '--n-epochs', type=int, default=GAN_N_EPOCHS, dest='n_epochs',
+        help=f'Épocas de GAN (default {GAN_N_EPOCHS}); bajarlo sirve para medir tiempos'
+    )
     args = parser.parse_args()
     if args.subjects is None:
         args.subjects = DEFAULT_SUBJECTS[args.dataset]
+    if args.train_frac is not None and not 0 < args.train_frac < 1:
+        parser.error(f'--train-frac debe estar entre 0 y 1 (dado: {args.train_frac})')
 
     dataset  = dataset_classes[args.dataset]()
     paradigm = P300()
@@ -301,6 +313,16 @@ def main():
     # Recalcular rutas/prefijo si --dataset/--config difieren de los defaults del archivo
     data_dir, test_data_dir = _data_dirs(args.dataset)
     model_prefix  = _model_prefix(args.dataset, args.config)
+    if args.train_frac is not None:
+        # mismo tag que subsample_train.py / --train-frac de v2, para que los tres
+        # scripts coincidan en el nombre del directorio y del checkpoint
+        from subsample_train import frac_tag
+        tag = frac_tag(args.train_frac)
+        data_dir = f'{data_dir}_{tag}'
+        model_prefix = f'{model_prefix}_{tag}'
+        if not os.path.isdir(data_dir):
+            parser.error(f'falta {data_dir}: correr antes '
+                         f'`python subsample_train.py --frac {args.train_frac}`')
     gan_kwargs = (
         dict(use_dwt=GAN_USE_DWT, high_freq=GAN_HIGH_FREQ, dwt_j=GAN_DWT_J,
              lambda_fm=GAN_LAMBDA_FM, use_postnet=GAN_USE_POSTNET, use_stacking=GAN_USE_STACKING)
@@ -367,7 +389,7 @@ def main():
         train_gan(
             csv_path, gan_save_path,
             patch_size=GAN_PATCH_SIZE,
-            n_epochs=GAN_N_EPOCHS,
+            n_epochs=args.n_epochs,
             seed=GAN_SEED,
             **gan_kwargs,
         )
