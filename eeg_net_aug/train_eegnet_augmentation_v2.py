@@ -63,6 +63,11 @@ DATASET = 'BNCI2014_009'  # pisado por --dataset (ver use_dataset())
 DEFAULT_EPOCHS = _tea.N_EPOCHS  # 60 -- lo ya corrido; otro valor va a results..._ep<N>
 DEFAULT_POOL = None  # None = pool de siempre (200/cond); un int va a results..._pool<N>
 DEFAULT_MODEL = 'eegnet'  # lo ya corrido; otro clasificador va a results..._<modelo>
+# CrossEntropy ponderada por frecuencia de clase (N/(2*n_c)) -- lo ya corrido.
+# Apagarla (--no-class-weight, results..._nocw) sirve para separar cuanto del
+# rendimiento viene de la loss y cuanto del aumento: los dos compensan el mismo
+# desbalance 1:5 del P300, asi que compiten por el mismo efecto.
+CLASS_WEIGHT = True
 
 # Receta de Adam por modelo. eegnet: la que se corrió siempre. conformer: la
 # del código oficial de Song et al. 2023 (lr 2e-4, betas (0.5, 0.999), sin
@@ -137,7 +142,7 @@ def build_model(n_channels, n_times):
 
 
 def use_dataset(dataset_name, n_epochs=None, lr=None, pool_n_target=None, model=None,
-                train_frac=None):
+                train_frac=None, class_weight=None):
     """Repunta datos, checkpoints y resultados al dataset dado.
 
     n_epochs: épocas de EEGNet (default DEFAULT_EPOCHS=60). Si difiere del
@@ -161,12 +166,14 @@ def use_dataset(dataset_name, n_epochs=None, lr=None, pool_n_target=None, model=
     GAN_008_tts_baseline_sXXX.pt (el 'tts_gan_baseline' de 009 vino de otro
     script, por eso el nombre distinto; la CLAVE del config se mantiene para
     que los scripts de análisis/plots sigan funcionando sin cambios)."""
-    global DATASET, DATA_DIR, TEST_DATA_DIR, RESULTS_DIR, CONFIGS_WITH_AUG, LR, MODEL
+    global DATASET, DATA_DIR, TEST_DATA_DIR, RESULTS_DIR, CONFIGS_WITH_AUG, LR, MODEL, CLASS_WEIGHT
     DATASET = dataset_name
     if n_epochs is not None:
         _tea.N_EPOCHS = n_epochs
     if model is not None:
         MODEL = model
+    if class_weight is not None:
+        CLASS_WEIGHT = class_weight
     # el modelo primero: sin --lr, el lr es el default DEL MODELO (OPTIM)
     LR = lr if lr is not None else OPTIM[MODEL]['lr']
     if pool_n_target is not None:
@@ -181,8 +188,9 @@ def use_dataset(dataset_name, n_epochs=None, lr=None, pool_n_target=None, model=
     lr_suffix = '' if LR == OPTIM[MODEL]['lr'] else f'_lr{LR:g}'
     pool_suffix = '' if _tea.POOL_N_TARGET is None else f'_pool{_tea.POOL_N_TARGET}'
     model_suffix = '' if MODEL == DEFAULT_MODEL else f'_{MODEL}'
+    cw_suffix = '' if CLASS_WEIGHT else '_nocw'
     RESULTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                               f'results{suffix}{ep_suffix}{lr_suffix}{pool_suffix}{model_suffix}')
+                               f'results{suffix}{ep_suffix}{lr_suffix}{pool_suffix}{model_suffix}{cw_suffix}')
     if dataset_name != 'BNCI2014_009':
         code = dataset_name.split('_')[-1]
         DATA_DIR, TEST_DATA_DIR = _mp._data_dirs(dataset_name)
@@ -271,8 +279,11 @@ def run_single(X_train, y_train, X_test, y_test, device, seed):
     y_tr = torch.tensor(y_train, dtype=torch.long).to(device)
     x_te = to_input(X_test).to(device)
 
-    class_counts = torch.bincount(y_tr, minlength=2).float()
-    weight = (class_counts.sum() / (2 * class_counts.clamp(min=1))).to(device)
+    if CLASS_WEIGHT:
+        class_counts = torch.bincount(y_tr, minlength=2).float()
+        weight = (class_counts.sum() / (2 * class_counts.clamp(min=1))).to(device)
+    else:
+        weight = None  # sin compensar el desbalance: el aumento queda como unico mecanismo
     criterion = nn.CrossEntropyLoss(weight=weight)
     optimizer = torch.optim.Adam(model.parameters(), lr=LR, betas=OPTIM[MODEL]['betas'],
                                  weight_decay=OPTIM[MODEL]['weight_decay'])
@@ -356,7 +367,7 @@ def ensure_run(config, subject, ratio, seed, X_train, y_train, X_test, y_test, d
     result = run_single(X_tr, y_tr, X_test, y_test, device, seed)
     result.update({'config': config, 'subject': subject, 'ratio': ratio, 'seed': seed, 'n_aug': n_aug,
                    'n_epochs': _tea.N_EPOCHS, 'lr': LR, 'pool_n_target': _tea.POOL_N_TARGET,
-                   'model': MODEL})  # presupuesto/lr/modelo registrados: corridas distintas no se mezclan
+                   'model': MODEL, 'class_weight': CLASS_WEIGHT})  # presupuesto/lr/modelo registrados: corridas distintas no se mezclan
 
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, 'w') as f:
@@ -528,11 +539,14 @@ if __name__ == '__main__':
     parser.add_argument('--train-frac', type=float, default=None, dest='train_frac',
                         help='fracción del train real a usar (ver subsample_train.py, hay que '
                              'correrlo antes); escribe en results..._f<N>. El test no se recorta.')
+    parser.add_argument('--no-class-weight', action='store_false', dest='class_weight',
+                        help='CrossEntropy SIN ponderar por clase (default: ponderada); '
+                             'escribe en results..._nocw')
     args = parser.parse_args()
     if args.train_frac is not None and not 0 < args.train_frac < 1:
         parser.error(f'--train-frac debe estar entre 0 y 1 (dado: {args.train_frac})')
 
-    use_dataset(args.dataset, args.epochs, args.lr, args.pool_size, args.model, args.train_frac)
+    use_dataset(args.dataset, args.epochs, args.lr, args.pool_size, args.model, args.train_frac, args.class_weight)
     _selfcheck()
     if args.configs:
         desconocidas = set(args.configs) - set(CONFIGS_WITH_AUG)
