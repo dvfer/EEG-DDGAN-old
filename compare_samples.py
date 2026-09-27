@@ -86,10 +86,16 @@ def generate_synthetic(model_path, real_csv, out_csv, n_per_cond=None):
             n = min(int(n_trials_per_cond.get(cond, 0)), MAX_SAMPLES_PER_COND)
         if n == 0:
             continue
-        tmp_csv = os.path.join(GEN_DIR, f'_tmp_{name}.csv')
+        # el pid va en el nombre: con varios sujetos en paralelo, un temporal de
+        # nombre fijo hace que los procesos se pisen y el pool salga con filas
+        # entremezcladas -- parsea o no segun donde caiga el corte, asi que puede
+        # colarse como valido (paso con f50_s006: 17 electrodos, 5045 filas)
+        tmp_csv = os.path.join(GEN_DIR, f'_tmp_{name}_{os.getpid()}.csv')
         _generate_condition_csv(model_path, tmp_csv, cond, n)
-        parts.append(pd.read_csv(tmp_csv))
-        os.remove(tmp_csv)
+        try:
+            parts.append(pd.read_csv(tmp_csv))
+        finally:
+            os.remove(tmp_csv)  # sin esto un fallo de parseo deja el temporal colgado
 
     df = pd.concat(parts, ignore_index=True)
     df.to_csv(out_csv, index=False)
